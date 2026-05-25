@@ -188,6 +188,22 @@ def prompt_text(prompt: str, default: str = "") -> str:
     return value or default
 
 
+def prompt_bool(prompt: str, default: bool) -> bool:
+    suffix = " [y]" if default else " [n]"
+    true_values = {"1", "true", "yes", "y", "on"}
+    false_values = {"0", "false", "no", "n", "off"}
+
+    while True:
+        value = input(f"{prompt}{suffix}: ").strip().lower()
+        if not value:
+            return default
+        if value in true_values:
+            return True
+        if value in false_values:
+            return False
+        print("请输入 y 或 n（也可输入 true/false、1/0、on/off）。")
+
+
 def prompt_existing_output(job: PdfJob) -> str:
     while True:
         choice = input(
@@ -696,9 +712,13 @@ def main() -> int:
     default_language = env_value(env, "MINERU_LANGUAGE", "en") or "en"
     language = prompt_text("MinerU 语言参数，回车保留默认值", default_language)
     page_ranges = prompt_text("所有 PDF 的页码范围，例如 1-3 或 1,3-5，回车表示全部页", "")
+    default_enable_ocr = env_bool(env, "MINERU_ENABLE_OCR", False)
+    enable_ocr = prompt_bool(
+        "是否启用 OCR（常见可复制文字的学术论文建议关闭；扫描件/图片 PDF 才开启），回车保留默认值",
+        default_enable_ocr,
+    )
 
     model_version = env_value(env, "MINERU_MODEL_VERSION", "vlm") or "vlm"
-    enable_ocr = env_bool(env, "MINERU_ENABLE_OCR", True)
     enable_formula = env_bool(env, "MINERU_ENABLE_FORMULA", True)
     enable_table = env_bool(env, "MINERU_ENABLE_TABLE", True)
 
