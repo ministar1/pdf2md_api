@@ -1,0 +1,10 @@
+.env
+__pycache__/
+*.py[cod]
+
+# Local input/output data should not be published by default.
+input/*
+!input/.gitkeep
+output/*
+!output/.gitkeep
+
