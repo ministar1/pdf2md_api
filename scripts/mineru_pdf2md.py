@@ -710,11 +710,11 @@ def main() -> int:
         return 0
 
     default_language = env_value(env, "MINERU_LANGUAGE", "en") or "en"
-    language = prompt_text("MinerU 语言参数，回车保留默认值", default_language)
+    language = prompt_text("MinerU 语言参数（常用备选项：ch、en、japan、korean），回车保留默认值", default_language)
     page_ranges = prompt_text("所有 PDF 的页码范围，例如 1-3 或 1,3-5，回车表示全部页", "")
-    default_enable_ocr = env_bool(env, "MINERU_ENABLE_OCR", False)
+    default_enable_ocr = env_bool(env, "MINERU_ENABLE_OCR", True)
     enable_ocr = prompt_bool(
-        "是否启用 OCR（常见可复制文字的学术论文建议关闭；扫描件/图片 PDF 才开启），回车保留默认值",
+        "是否启用 OCR（常见可复制文字的学术论文可关闭；扫描件/图片 PDF 建议开启；输入 y/yes 开启，输入 n/no 关闭），回车保留默认值",
         default_enable_ocr,
     )
 
