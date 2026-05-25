@@ -65,7 +65,7 @@ edit_token.bat
 MINERU_API_TOKEN=
 MINERU_LANGUAGE=en
 MINERU_MODEL_VERSION=vlm
-MINERU_ENABLE_OCR=false
+MINERU_ENABLE_OCR=true
 MINERU_ENABLE_FORMULA=true
 MINERU_ENABLE_TABLE=true
 ```
@@ -75,7 +75,7 @@ MINERU_ENABLE_TABLE=true
 - `MINERU_API_TOKEN`：MinerU API token。
 - `MINERU_LANGUAGE`：默认语言参数，当前默认 `en`。
 - `MINERU_MODEL_VERSION`：默认 `vlm`。
-- `MINERU_ENABLE_OCR`：是否开启 OCR，默认 `false`。常见学术论文通常包含可复制文本，建议默认关闭；扫描版论文、拍照 PDF 或图片型 PDF 可改为 `true`，或运行时临时开启。
+- `MINERU_ENABLE_OCR`：是否开启 OCR，默认 `true`。扫描版论文、拍照 PDF 或图片型 PDF 建议开启；常见可复制文字的学术论文可改为 `false`，或运行时临时关闭。
 - `MINERU_ENABLE_FORMULA`：是否开启公式识别，默认 `true`。
 - `MINERU_ENABLE_TABLE`：是否开启表格识别，默认 `true`。
 
@@ -92,17 +92,17 @@ MINERU_LANGUAGE=en
 运行时临时值：双击 `run.bat` 后，终端会提示：
 
 ```text
-MinerU 语言参数，回车保留默认值 [en]:
+MinerU 语言参数（常用备选项：ch、en、japan、korean），回车保留默认值 [en]:
 ```
 
-直接回车使用 `.env` 默认值；输入其他 MinerU 支持的语言值则仅对本次运行生效。
+直接回车使用 `.env` 默认值；输入常用备选项如 `ch`、`en`、`japan`、`korean`，或其他 MinerU 支持的语言值，则仅对本次运行生效。
 
 ## 调整 OCR
 
-OCR 默认关闭，适合大多数可复制文字的学术论文。扫描版论文、拍照 PDF 或图片型 PDF 需要 OCR 时，可以长期修改 `.env`：
+OCR 默认开启，适合扫描版论文、拍照 PDF 或图片型 PDF。常见可复制文字的学术论文如果不需要 OCR，可以长期修改 `.env`：
 
 ```env
-MINERU_ENABLE_OCR=true
+MINERU_ENABLE_OCR=false
 ```
 
 也可以在双击 `run.bat` 后，按终端提示仅对本次运行临时开启或关闭。
@@ -135,10 +135,17 @@ run.bat
 
 运行过程会提示：
 
-- MinerU 语言参数：回车使用 `.env` 默认值。
+- MinerU 语言参数：提示会显示常用备选项 `ch`、`en`、`japan`、`korean`；回车使用 `.env` 默认值，输入某个语言值则仅对本次运行生效。
 - 页码范围：回车表示全部页；也可以输入 `1-3` 或 `1,3-5`。
-- 是否启用 OCR：回车使用 `.env` 默认值；输入 `y`/`n` 仅对本次运行生效。
+- 是否启用 OCR：提示会显示当前默认值，例如 `[y]` 表示默认开启；回车使用 `.env` 默认值，输入 `y` 或 `yes` 表示开启，输入 `n` 或 `no` 表示关闭，且仅对本次运行生效。
 - 如果输出目录已存在：可选择跳过、覆盖重跑或取消。
+
+示例提示：
+
+```text
+MinerU 语言参数（常用备选项：ch、en、japan、korean），回车保留默认值 [en]:
+是否启用 OCR（常见可复制文字的学术论文可关闭；扫描件/图片 PDF 建议开启；输入 y/yes 开启，输入 n/no 关闭），回车保留默认值 [y]:
+```
 
 如果 `.env` 不存在，`run.bat` 会先提示你粘贴 MinerU token，并自动创建 `.env`。
 
