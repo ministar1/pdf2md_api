@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import http.client
 import os
+import re
 import shutil
 import sys
 import time
@@ -28,6 +29,13 @@ MINERU_RESULT_URL_TEMPLATE = "https://mineru.net/api/v4/extract-results/batch/{b
 MAX_BATCH_SIZE = 50
 POLL_INTERVAL_SECONDS = 10
 POLL_TIMEOUT_SECONDS = 60 * 60
+MAX_PDF_SIZE_BYTES = 200 * 1024 * 1024
+WINDOWS_SAFE_PATH_LENGTH = 240
+WINDOWS_EXTRACTION_PATH_RESERVE = 100
+VALID_MODEL_VERSIONS = {"pipeline", "vlm"}
+TRUE_VALUES = {"1", "true", "yes", "y", "on"}
+FALSE_VALUES = {"0", "false", "no", "n", "off"}
+PAGE_RANGE_PART_RE = re.compile(r"^(-?[1-9]\d*)(?:-(-?[1-9]\d*))?$")
 
 
 class ConversionError(Exception):
@@ -54,6 +62,9 @@ class PdfJob:
     output_dir: Path
     data_id: str
     overwrite: bool = False
+    started_at: str = field(
+        default_factory=lambda: datetime.now().isoformat(timespec="seconds")
+    )
 
     @property
     def markdown_path(self) -> Path:
@@ -175,11 +186,62 @@ def env_bool(values: dict[str, str], key: str, default: bool) -> bool:
     value = values.get(key, os.environ.get(key))
     if value is None or value == "":
         return default
-    return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    normalized = value.strip().lower()
+    if normalized in TRUE_VALUES:
+        return True
+    if normalized in FALSE_VALUES:
+        return False
+    raise ValueError(f"{key} 必须是 true/false、yes/no、1/0 或 on/off，当前值: {value!r}")
 
 
 def env_value(values: dict[str, str], key: str, default: str = "") -> str:
     return values.get(key, os.environ.get(key, default)).strip()
+
+
+def validate_env_config(values: dict[str, str]) -> list[str]:
+    errors: list[str] = []
+    for key, default in (
+        ("MINERU_ENABLE_OCR", True),
+        ("MINERU_ENABLE_FORMULA", True),
+        ("MINERU_ENABLE_TABLE", True),
+    ):
+        try:
+            env_bool(values, key, default)
+        except ValueError as exc:
+            errors.append(str(exc))
+
+    model_version = env_value(values, "MINERU_MODEL_VERSION", "vlm") or "vlm"
+    if model_version not in VALID_MODEL_VERSIONS:
+        supported = ", ".join(sorted(VALID_MODEL_VERSIONS))
+        errors.append(
+            f"MINERU_MODEL_VERSION={model_version!r} 不适用于 PDF；支持的值: {supported}。"
+        )
+    return errors
+
+
+def normalize_page_ranges(value: str) -> str:
+    value = value.strip()
+    if not value:
+        return ""
+
+    normalized_parts: list[str] = []
+    for raw_part in value.split(","):
+        part = raw_part.strip()
+        match = PAGE_RANGE_PART_RE.fullmatch(part)
+        if not match:
+            raise ValueError(
+                "页码范围格式无效；请使用 1-3、1,3-5 或 MinerU 支持的 2--2 形式。"
+            )
+
+        start = int(match.group(1))
+        end_text = match.group(2)
+        if end_text is not None:
+            end = int(end_text)
+            if start > 0 and end > 0 and start > end:
+                raise ValueError(f"页码范围起始页不能大于结束页: {part}")
+        normalized_parts.append(part)
+
+    return ",".join(normalized_parts)
 
 
 def prompt_text(prompt: str, default: str = "") -> str:
@@ -190,18 +252,25 @@ def prompt_text(prompt: str, default: str = "") -> str:
 
 def prompt_bool(prompt: str, default: bool) -> bool:
     suffix = " [y]" if default else " [n]"
-    true_values = {"1", "true", "yes", "y", "on"}
-    false_values = {"0", "false", "no", "n", "off"}
 
     while True:
         value = input(f"{prompt}{suffix}: ").strip().lower()
         if not value:
             return default
-        if value in true_values:
+        if value in TRUE_VALUES:
             return True
-        if value in false_values:
+        if value in FALSE_VALUES:
             return False
         print("请输入 y 或 n（也可输入 true/false、1/0、on/off）。")
+
+
+def prompt_page_ranges() -> str:
+    while True:
+        value = prompt_text("所有 PDF 的页码范围，例如 1-3 或 1,3-5，回车表示全部页", "")
+        try:
+            return normalize_page_ranges(value)
+        except ValueError as exc:
+            print(exc)
 
 
 def prompt_existing_output(job: PdfJob) -> str:
@@ -219,6 +288,85 @@ def prompt_existing_output(job: PdfJob) -> str:
         if choice in {"c", "cancel"}:
             return "cancel"
         print("请输入 s、o 或 c。")
+
+
+def create_pdf_job(pdf_path: Path, *, output_root: Path | None = None) -> PdfJob:
+    output_root = output_root or OUTPUT_DIR
+    return PdfJob(
+        pdf_path=pdf_path,
+        output_dir=output_root / pdf_path.stem,
+        data_id=uuid.uuid4().hex,
+    )
+
+
+def validate_path_lengths(job: PdfJob, *, platform_name: str = os.name) -> None:
+    if platform_name != "nt":
+        return
+
+    paths = (job.pdf_path.resolve(), job.markdown_path.resolve(), job.zip_path.resolve())
+    too_long = [path for path in paths if len(str(path)) > WINDOWS_SAFE_PATH_LENGTH]
+    output_base_too_long = (
+        len(str(job.output_dir.resolve())) + WINDOWS_EXTRACTION_PATH_RESERVE
+        > WINDOWS_SAFE_PATH_LENGTH
+    )
+    if too_long or output_base_too_long:
+        longest = max((str(path) for path in paths), key=len)
+        raise ConversionError(
+            "转换前检查",
+            "文件名或输出路径过长，可能导致 Windows 解压失败。"
+            f"请缩短 PDF 文件名或项目路径。当前最长路径 {len(longest)} 个字符，"
+            f"安全上限按 {WINDOWS_SAFE_PATH_LENGTH} 个字符检查。",
+        )
+
+
+def validate_pdf_job(job: PdfJob, *, platform_name: str = os.name) -> None:
+    if job.pdf_path.suffix.lower() != ".pdf":
+        raise ConversionError("转换前检查", f"文件扩展名不是 .pdf: {job.pdf_path.name}")
+    if not job.pdf_path.exists() or not job.pdf_path.is_file():
+        raise ConversionError("转换前检查", f"文件不存在或不是普通文件: {job.pdf_path}")
+
+    try:
+        size = job.pdf_path.stat().st_size
+    except OSError as exc:
+        raise ConversionError("转换前检查", f"无法读取文件大小: {exc}", original=exc) from exc
+
+    if size == 0:
+        raise ConversionError("转换前检查", "PDF 文件为空。")
+    if size > MAX_PDF_SIZE_BYTES:
+        size_mb = size / (1024 * 1024)
+        raise ConversionError(
+            "转换前检查",
+            f"PDF 文件大小为 {size_mb:.1f} MB，超过 MinerU 的 200 MB 限制。",
+        )
+
+    try:
+        with job.pdf_path.open("rb") as pdf_file:
+            header = pdf_file.read(1024)
+    except OSError as exc:
+        raise ConversionError("转换前检查", f"无法读取 PDF 文件: {exc}", original=exc) from exc
+    if b"%PDF-" not in header:
+        raise ConversionError(
+            "转换前检查",
+            "文件扩展名虽然是 .pdf，但未检测到 PDF 文件头；文件可能损坏或扩展名错误。",
+        )
+
+    validate_path_lengths(job, platform_name=platform_name)
+
+
+def preflight_pdf_files(
+    pdf_files: list[Path], *, output_root: Path = OUTPUT_DIR
+) -> tuple[list[Path], list[ReportEntry]]:
+    valid_files: list[Path] = []
+    entries: list[ReportEntry] = []
+    for pdf_path in pdf_files:
+        job = create_pdf_job(pdf_path, output_root=output_root)
+        try:
+            validate_pdf_job(job)
+        except ConversionError as error:
+            entries.append(make_failure_entry(job, error))
+        else:
+            valid_files.append(pdf_path)
+    return valid_files, entries
 
 
 def http_request(
@@ -542,6 +690,7 @@ def make_failure_entry(job: PdfJob, error: ConversionError, *, batch_id: str = "
         exception_summary=error.message,
         batch_id=batch_id,
         data_id=job.data_id,
+        started_at=job.started_at,
         finished_at=datetime.now().isoformat(timespec="seconds"),
     )
 
@@ -553,6 +702,7 @@ def make_success_entry(job: PdfJob, *, batch_id: str) -> ReportEntry:
         output_path=str(job.markdown_path),
         batch_id=batch_id,
         data_id=job.data_id,
+        started_at=job.started_at,
         finished_at=datetime.now().isoformat(timespec="seconds"),
     )
 
@@ -564,6 +714,7 @@ def make_skipped_entry(job: PdfJob, reason: str) -> ReportEntry:
         output_path=str(job.output_dir),
         exception_summary=reason,
         data_id=job.data_id,
+        started_at=job.started_at,
         finished_at=datetime.now().isoformat(timespec="seconds"),
     )
 
@@ -577,12 +728,8 @@ def prepare_jobs(pdf_files: list[Path]) -> tuple[list[PdfJob], list[ReportEntry]
     entries: list[ReportEntry] = []
     cancelled = False
 
-    for pdf in pdf_files:
-        job = PdfJob(
-            pdf_path=pdf,
-            output_dir=OUTPUT_DIR / pdf.stem,
-            data_id=uuid.uuid4().hex,
-        )
+    for index, pdf in enumerate(pdf_files):
+        job = create_pdf_job(pdf)
 
         if job.output_dir.exists():
             choice = prompt_existing_output(job)
@@ -591,7 +738,14 @@ def prepare_jobs(pdf_files: list[Path]) -> tuple[list[PdfJob], list[ReportEntry]
                 continue
             if choice == "cancel":
                 cancelled = True
-                entries.append(make_skipped_entry(job, "Run cancelled by user before processing this file."))
+                cancellation_reason = "Run cancelled by user; this file was not processed."
+                entries.extend(make_skipped_entry(queued_job, cancellation_reason) for queued_job in jobs)
+                entries.append(make_skipped_entry(job, cancellation_reason))
+                entries.extend(
+                    make_skipped_entry(create_pdf_job(remaining_pdf), cancellation_reason)
+                    for remaining_pdf in pdf_files[index + 1 :]
+                )
+                jobs.clear()
                 break
             job.overwrite = True
 
@@ -703,15 +857,31 @@ def main() -> int:
         print(f"报告: {REPORT_PATH}")
         return 1
 
+    config_errors = validate_env_config(env)
+    if config_errors:
+        report.config_error = "配置预检查失败:\n- " + "\n- ".join(config_errors)
+        report.write()
+        print(report.config_error)
+        print(f"报告: {REPORT_PATH}")
+        return 1
+
     if not pdf_files:
         report.write()
         print(f"{INPUT_DIR} 下没有找到 PDF 文件。")
         print(f"报告: {REPORT_PATH}")
         return 0
 
+    pdf_files, preflight_entries = preflight_pdf_files(pdf_files)
+    report.entries.extend(preflight_entries)
+    if not pdf_files:
+        report.write()
+        print("所有 PDF 都未通过转换前检查。")
+        print_summary(report.entries)
+        return 1
+
     default_language = env_value(env, "MINERU_LANGUAGE", "en") or "en"
     language = prompt_text("MinerU 语言参数（常用备选项：ch、en、japan、korean），回车保留默认值", default_language)
-    page_ranges = prompt_text("所有 PDF 的页码范围，例如 1-3 或 1,3-5，回车表示全部页", "")
+    page_ranges = prompt_page_ranges()
     default_enable_ocr = env_bool(env, "MINERU_ENABLE_OCR", True)
     enable_ocr = prompt_bool(
         "是否启用 OCR（常见可复制文字的学术论文可关闭；扫描件/图片 PDF 建议开启；输入 y/yes 开启，输入 n/no 关闭），回车保留默认值",
